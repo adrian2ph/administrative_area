@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  gadm-sqlite:
+    build: .
+    image: adrian2armstrong/administrative_area
+    container_name: administrative_area
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
