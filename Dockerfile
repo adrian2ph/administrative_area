@@ -6,7 +6,7 @@ COPY go.mod ./
 RUN go mod download
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/gpkg-reverse ./main.go
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "sqlite_omit_load_extension" -o /out/gpkg-reverse ./main.go
 
 # --- run stage ---
 FROM alpine:3.20
@@ -21,5 +21,6 @@ ENV GPKG_PATH=/data/gadm_410.gpkg
 ENV GPKG_TABLE=gadm_410
 ENV GPKG_GEOM_COL=geom
 ENV ROUND_PLACES=4
+ENV GPKG_PARENT_CODE=IDN
 EXPOSE 8080
 CMD ["/app/gpkg-reverse"]

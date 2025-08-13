@@ -321,8 +321,7 @@ func (s *Server) handleReverse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	parentCode := strings.TrimSpace(r.URL.Query().Get("parent_code"))
 	if parentCode == "" {
-		writeErrorJSON(w, http.StatusBadRequest, 400, "parent_code is required")
-		return
+		parentCode = env("GPKG_PARENT_CODE", "IDN")
 	}
 	items, err := s.childrenOf(parentCode)
 	if err != nil {

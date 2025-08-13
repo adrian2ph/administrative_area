@@ -43,3 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_gadm410_lvl4_children ON gadm_410(GID_4, GID_5, N
 
 ANALYZE;
 ```
+
+## 构建
+
+docker buildx build --platform=linux/amd64  -t adrian2armstrong/administrative_area .
