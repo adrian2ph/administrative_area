@@ -327,13 +327,14 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// 标准化 404 判定
 		if strings.Contains(err.Error(), "not found") {
-			writeErrorJSON(w, http.StatusOK, 201, "parent_code not found")
+			items = make([]ChildrenItem, 0)
+		} else {
+			log.Println("children error:", err)
+			writeErrorJSON(w, http.StatusInternalServerError, 500, "internal error")
 			return
 		}
-		log.Println("children error:", err)
-		writeErrorJSON(w, http.StatusInternalServerError, 500, "internal error")
-		return
 	}
+	w.Header().Set("Cache-Control", "public, max-age=2592000, stale-if-error=2592000")
 	writeJSON(w, http.StatusOK, ChildrenRes{
 		Code: 200,
 		Msg:  "success",
