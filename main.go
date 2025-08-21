@@ -58,6 +58,23 @@ type ChildrenRes struct {
 	Data *ChildrenItemList `json:"data"`
 }
 
+// 行政区域的坐标点
+type LatlngItem struct {
+	GID        string `json:"code"`
+	Latitude float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Name       string `json:"name"`
+	ParentCode string `json:"parentCode"`
+	Level      string `json:"level"`
+}
+
+type LatlngRes struct {
+	Code int               `json:"code"`
+	Msg  string            `json:"msg"`
+	Data *LatlngItem 	`json:"data"`
+}
+
+
 type Server struct {
 	db           *sql.DB
 	table        string
@@ -342,6 +359,101 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+/************* 获取行政区域的中心坐标 *************/
+func (s *Server) latlngOf(GID string) (*LatlngItem, error) {
+	GID = strings.TrimSpace(GID)
+	if GID == "" {
+		return nil, fmt.Errorf("gid required")
+	}
+
+	levelName := map[int]string{
+		0: "LEVEL_UNSPECIFIED",
+		1: "PROVINCE",
+		2: "CITY",
+		3: "DISTRICT",
+		4: "VILLAGE",
+		5: "SUBVILLAGE",
+	}
+
+	level, err := s.detectLevel(GID)
+	if err != nil {
+		return nil, err
+	}
+
+	gidCol := fmt.Sprintf("GID_%d", level)
+	nameCol := fmt.Sprintf("NAME_%d", level)
+	var parentGidCol string
+	if level > 0 {
+		parentGidCol = fmt.Sprintf("GID_%d", level-1)
+	} else {
+		parentGidCol = "NULL"
+	}
+
+	sqlStr := fmt.Sprintf(`SELECT %s, %s, %s, %s FROM %s WHERE %s = ? LIMIT 1`,
+		gidCol, nameCol, parentGidCol, s.geomCol, s.table, gidCol)
+
+	var (
+		gid       string
+		name      string
+		parentGid sql.NullString
+		blob      []byte
+	)
+
+	err = s.db.QueryRow(sqlStr, GID).Scan(&gid, &name, &parentGid, &blob)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("gid not found")
+		}
+		return nil, err
+	}
+
+	wkbBytes, _, err := gpkgToWKB(blob)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert gpkg to wkb: %w", err)
+	}
+
+	mp, err := decodeMultiPolygon(wkbBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode multipolygon: %w", err)
+	}
+
+	centroid, _ := planar.CentroidArea(mp)
+
+	return &LatlngItem{
+		GID:        gid,
+		Latitude:   centroid.Lat(),
+		Longitude:  centroid.Lon(),
+		Name:       name,
+		ParentCode: parentGid.String,
+		Level:      levelName[level],
+	}, nil
+}
+
+// 获取行政区域的坐标点
+func (s *Server) handleLatlng(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		code = env("GPKG_PARENT_CODE", "IDN")
+	}
+	item, err := s.latlngOf(code)
+	if err != nil {
+		// 标准化 404 判定
+		if strings.Contains(err.Error(), "not found") {
+			item = &LatlngItem{}
+		} else {
+			log.Println("children error:", err)
+			writeErrorJSON(w, http.StatusInternalServerError, 500, "internal error")
+			return
+		}
+	}
+	w.Header().Set("Cache-Control", "public, max-age=2592000, stale-if-error=2592000")
+	writeJSON(w, http.StatusOK, LatlngRes{
+		Code: 200,
+		Msg:  "success",
+		Data: item,
+	})
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
@@ -395,10 +507,11 @@ func main() {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/reverse", s.handleReverse)
 	mux.HandleFunc("/children", s.handleChildren)
-
+	mux.HandleFunc("/latlng", s.handleLatlng)
 	addr := env("ADDR", "0.0.0.0:8082")
 	log.Println("http://" + addr + "/health")
 	log.Println("http://" + addr + "/reverse?latitude=-6.193835958650485&longitude=106.79943779288192")
 	log.Println("http://" + addr + "/children?parent_code=IDN.8_1")
+	log.Println("http://" + addr + "/latlng?code=IDN.8_1")
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
