@@ -35,6 +35,8 @@ type AdminLevels struct {
 	Name3 string `json:"level3Name,omitempty"`
 	Name4 string `json:"level4Name,omitempty"`
 	Name5 string `json:"level5Name,omitempty"`
+
+	List []ChildrenItem `json:"list,omitempty"`
 }
 
 type AdminLevelsRes struct {
@@ -159,6 +161,17 @@ func decodeMultiPolygon(w []byte) (orb.MultiPolygon, error) {
 	}
 }
 
+// 行政区层级映射
+func levelNameMap() map[int]string {
+	return map[int]string{
+		0: "LEVEL_UNSPECIFIED",
+		1: "PROVINCE",
+		2: "CITY",
+		3: "DISTRICT",
+		4: "VILLAGE",
+	}
+}
+
 /************* 反向地理 *************/
 func (s *Server) reverse(lon, lat float64) (*AdminLevels, error) {
 	f := math.Pow10(s.roundPlaces)
@@ -189,9 +202,38 @@ func (s *Server) reverse(lon, lat float64) (*AdminLevels, error) {
 			continue
 		}
 		if planar.MultiPolygonContains(mp, orb.Point{rlon, rlat}) {
+			levelName := levelNameMap()
+			// GID 和 Name 成对存起来
+			gids := []struct {
+				gid  string
+				name string
+			}{
+				{g0, n0},
+				{g1, n1},
+				{g2, n2},
+				{g3, n3},
+				{g4, n4},
+				{g5, n5},
+			}
+
+			// 构造 ChildrenItem 列表
+			list := make([]ChildrenItem, 0, 6)
+			parent := ""
+			for i, item := range gids {
+				if item.gid != "" {
+					list = append(list, ChildrenItem{
+						GID:        item.gid,
+						Name:       item.name,
+						ParentCode: parent,
+						Level:      levelName[i],
+					})
+					parent = item.gid
+				}
+			}
 			return &AdminLevels{
 				GID0: g0, GID1: g1, GID2: g2, GID3: g3, GID4: g4, GID5: g5,
 				Name0: n0, Name1: n1, Name2: n2, Name3: n3, Name4: n4, Name5: n5,
+				List: list,
 			}, nil
 		}
 	}
@@ -208,13 +250,7 @@ func (s *Server) childrenOf(parentGID string) ([]ChildrenItem, error) {
 		return nil, fmt.Errorf("gid required")
 	}
 
-	levelName := map[int]string{
-		0: "LEVEL_UNSPECIFIED",
-		1: "PROVINCE",
-		2: "CITY",
-		3: "DISTRICT",
-		4: "VILLAGE",
-	}
+	levelName := levelNameMap()
 
 	level, err := s.detectLevel(parentGID)
 	if err != nil {

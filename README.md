@@ -7,6 +7,7 @@
 http://0.0.0.0:8082/health
 http://0.0.0.0:8082/reverse?latitude=-6.193835958650485&longitude=106.79943779288192
 http://0.0.0.0:8082/children?parent_code=IDN.8_1
+http://0.0.0.0:8082/latlng?code=IDN.8_1
 
 ## 经纬度坐标只需要保留4位小数
 
