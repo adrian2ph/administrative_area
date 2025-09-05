@@ -7,3 +7,5 @@ services:
     ports:
       - "8082:8080"
     restart: unless-stopped
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}

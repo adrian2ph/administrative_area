@@ -9,6 +9,11 @@ http://0.0.0.0:8082/reverse?latitude=-6.193835958650485&longitude=106.7994377928
 http://0.0.0.0:8082/children?parent_code=IDN.8_1
 http://0.0.0.0:8082/latlng?code=IDN.8_1
 
+## 谷歌海拔api
+
+* https://developers.google.com/maps/documentation/elevation/start?hl=zh-cn#maps_http_elevation_locations-txt
+* 设置环境变量 GOOGLE_API_KEY
+
 ## 经纬度坐标只需要保留4位小数
 
 GADM 的坐标都是 EPSG:4326（WGS84），单位是经纬度度数：1° ≈ 111.32 km（赤道附近）

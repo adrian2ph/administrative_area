@@ -68,6 +68,7 @@ type LatlngItem struct {
 	Name       string `json:"name"`
 	ParentCode string `json:"parentCode"`
 	Level      string `json:"level"`
+	Elevation  float64 `json:"elevation"`
 }
 
 type LatlngRes struct {
@@ -79,11 +80,13 @@ type LatlngRes struct {
 
 type Server struct {
 	db           *sql.DB
+	elevationDB  *sql.DB
 	table        string
 	geomCol      string
 	rtreeTable   string
 	sqlCandidate string
 	roundPlaces  int
+	googleAPIKey string
 }
 
 func env(key, def string) string {
@@ -462,8 +465,61 @@ func (s *Server) latlngOf(GID string) (*LatlngItem, error) {
 		Name:       name,
 		ParentCode: parentGid.String,
 		Level:      levelName[level],
+		Elevation: 0.0,
 	}, nil
 }
+
+type ElevationResponse struct {
+	Results []struct {
+		Elevation float64 `json:"elevation"`
+	} `json:"results"`
+	Status       string `json:"status"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+func (s *Server) getElevation(gid string) (float64, error) {
+	var elevation float64
+	err := s.elevationDB.QueryRow("SELECT elevation FROM elevations WHERE gid = ?", gid).Scan(&elevation)
+	return elevation, err
+}
+
+func (s *Server) saveElevation(gid string, elevation float64) error {
+	_, err := s.elevationDB.Exec("INSERT INTO elevations (gid, elevation) VALUES (?, ?)", gid, elevation)
+	return err
+}
+
+func (s *Server) fetchElevationFromGoogle(lat, lon float64) (float64, error) {
+	if s.googleAPIKey == "" {
+		return 0, fmt.Errorf("GOOGLE_API_KEY is not set")
+	}
+
+	url := fmt.Sprintf("https://maps.googleapis.com/maps/api/elevation/json?locations=%f,%f&key=%s", lat, lon, s.googleAPIKey)
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("google api request failed with status: %s", resp.Status)
+	}
+
+	var elevationResp ElevationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&elevationResp); err != nil {
+		return 0, err
+	}
+
+	if elevationResp.Status != "OK" {
+		return 0, fmt.Errorf("google api error: %s, message: %s", elevationResp.Status, elevationResp.ErrorMessage)
+	}
+
+	if len(elevationResp.Results) == 0 {
+		return 0, fmt.Errorf("no elevation results from google api")
+	}
+
+	return elevationResp.Results[0].Elevation, nil
+}
+
 
 // 获取行政区域的坐标点
 func (s *Server) handleLatlng(w http.ResponseWriter, r *http.Request) {
@@ -473,15 +529,37 @@ func (s *Server) handleLatlng(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.latlngOf(code)
 	if err != nil {
-		// 标准化 404 判定
-		if strings.Contains(err.Error(), "not found") {
-			item = &LatlngItem{}
-		} else {
-			log.Println("children error:", err)
-			writeErrorJSON(w, http.StatusInternalServerError, 500, "internal error")
+		if strings.Contains(err.Error(), "gid not found") {
+			writeErrorJSON(w, http.StatusNotFound, 404, "not found")
 			return
 		}
+		log.Println("latlngOf error:", err)
+		writeErrorJSON(w, http.StatusInternalServerError, 500, "internal error")
+		return
 	}
+
+	elevation, err := s.getElevation(item.GID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			newElevation, fetchErr := s.fetchElevationFromGoogle(item.Latitude, item.Longitude)
+			if fetchErr != nil {
+				log.Printf("Failed to fetch elevation for GID %s: %v", item.GID, fetchErr)
+				item.Elevation = 0.0
+			} else {
+				item.Elevation = newElevation
+				log.Printf("fetch elevation for GID %s: %f", item.GID, newElevation)
+				if saveErr := s.saveElevation(item.GID, newElevation); saveErr != nil {
+					log.Printf("Failed to save elevation for GID %s: %v", item.GID, saveErr)
+				}
+			}
+		} else {
+			log.Printf("Failed to get elevation from cache for GID %s: %v", item.GID, err)
+			item.Elevation = 0.0
+		}
+	} else {
+		item.Elevation = elevation
+	}
+
 	w.Header().Set("Cache-Control", "public, max-age=2592000, stale-if-error=2592000")
 	writeJSON(w, http.StatusOK, LatlngRes{
 		Code: 200,
@@ -514,6 +592,20 @@ func newServer() (*Server, error) {
 	db.SetMaxOpenConns(1)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 
+	elevationDbPath := env("ELEVATION_DB_PATH", "data/elevations.db")
+	elevationDB, err := sql.Open("sqlite3", elevationDbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open elevation db: %w", err)
+	}
+
+	_, err = elevationDB.Exec(`CREATE TABLE IF NOT EXISTS elevations (
+        gid TEXT PRIMARY KEY,
+        elevation REAL NOT NULL
+    );`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create elevations table: %w", err)
+	}
+
 	rtree := fmt.Sprintf("rtree_%s_%s", table, geomCol)
 	sqlCand := fmt.Sprintf(`
 SELECT a.GID_0, a.GID_1, a.GID_2, a.GID_3, a.GID_4, a.GID_5,
@@ -526,11 +618,13 @@ LIMIT 200;`, geomCol, table, rtree)
 
 	return &Server{
 		db:           db,
+		elevationDB:  elevationDB,
 		table:        table,
 		geomCol:      geomCol,
 		rtreeTable:   rtree,
 		sqlCandidate: sqlCand,
 		roundPlaces:  rp,
+		googleAPIKey: env("GOOGLE_API_KEY", ""),
 	}, nil
 }
 
@@ -539,6 +633,9 @@ func main() {
 	if err != nil {
 		log.Fatal("init error:", err)
 	}
+	defer s.db.Close()
+	defer s.elevationDB.Close()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/reverse", s.handleReverse)
